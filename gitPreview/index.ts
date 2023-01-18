@@ -16,93 +16,100 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { findOption, RequiredMessageOption } from "@api/Commands";
+import { ApplicationCommandInputType, findOption, RequiredMessageOption } from "@api/Commands";
 import definePlugin from "@utils/types";
 
+const HTTPS_REGEX = /(?:\s|^)https?:\/\//;
+const LINES_REGEX = /([a-zA-Z0-9-_.#/]*)/g;
 
 const GITHOSTS: Array<{ regex: RegExp, replacements: [string, string][]; }> = [
     {
-        regex: /(?:\s|^)https?:\/\/(www\.)?github\.com\/.+?\/.+?\/blob\/([a-zA-Z0-9-_.#/]*)/g,
-        replacements: [
-            ["/blob/", "/raw/"],
-        ],
+        regex: mergeRegexes([HTTPS_REGEX, /(www\.)?github\.com\/.+?\/.+?\/blob\//, LINES_REGEX]),
+        replacements: [["/blob/", "/raw/"]],
     },
     {
-        regex: /(?:\s|^)https?:\/\/.+?\/.+?\/.+?\/-\/blob\/([a-zA-Z0-9-_.#/]*)/g,
-        replacements: [
-            ["/blob/", "/raw/"],
-        ],
+        regex: mergeRegexes([HTTPS_REGEX, /.+?\/.+?\/-\/blob\//, LINES_REGEX]),
+        replacements: [["/blob/", "/raw/"]],
     },
     {
-        regex: /(?:\s|^)https?:\/\/.+?\/.+?\/.+?\/src\/branch\/([a-zA-Z0-9-_.#/]*)/g,
-        replacements: [
-            ["/src/", "/raw/"],
-        ],
+        regex: mergeRegexes([HTTPS_REGEX, /.+?\/.+?\/.+?\/src\/branch\//, LINES_REGEX]),
+        replacements: [["/src/", "/raw/"]],
     },
 ];
 
-// convert file url to raw file url
+function mergeRegexes(regexes) {
+    return new RegExp(regexes.map(r => r.source).join(""), "g");
+}
+
+function replaceAll(str: string, replacements: [string, string][]): string {
+    for (const [from, to] of replacements) {
+        str = str.replace(from, to);
+    }
+    return str;
+}
+
 function getRawUrl(url: string): string {
     for (const host of Object.values(GITHOSTS)) {
         const match = host.regex.exec(url);
-        if (match) {
-            for (const [from, to] of host.replacements) {
-                url = url.replace(from, to);
-            }
-            return url;
-        }
+        if (match) { return replaceAll(match[0], host.replacements); }
     }
-    return url;
+    return "";
 }
 
-// get file name, extension, and optional line start/end from url
 function getFileInfo(url: string): { name: string; ext: string; lineStart?: number; lineEnd?: number; } {
-    const match = url.match(/(?:\/|\\)([a-zA-Z0-9-_.]+)(?:#L(\d+)(?:-L(\d+))?)?$/);
-    if (!match) return { name: "", ext: "" };
+    const matches = url.match(/([a-zA-Z0-9-_.]+)(?:#L(\d+)(?:-L(\d+))?)?$/);
+    if (!matches) return { name: "", ext: "" };
+    var [filename, ext] = matches[1].split(".");
     return {
-        name: match[1],
-        ext: match[1].split(".").pop() ?? "",
-        lineStart: match[2] ? parseInt(match[2]) : undefined,
-        lineEnd: match[3] ? parseInt(match[3]) : undefined,
+        name: filename,
+        ext: ext ?? "",
+        lineStart: matches[2] ? (parseInt(matches[2]) - 1) : undefined,
+        lineEnd: matches[3] ? parseInt(matches[3]) : undefined,
     };
 }
 
-// unindent code block with leading whitespace
 function unindent(block: string): string {
     block = block.replace(/\t/g, "    ");
-    const minIndent = block.match(/^ *(?=\S)/gm)
-        ?.reduce((prev, curr) => Math.min(prev, curr.length), Infinity) ?? 0;
-
+    const minIndent = block.match(/^ *(?=\S)/gm)?.reduce((prev, curr) => Math.min(prev, curr.length), Infinity) ?? 0;
     if (!minIndent) return block;
     return block.replace(new RegExp(`^ {${minIndent}}`, "gm"), "");
 }
 
-// convert url, fetch file, trim to line range, and return as code block
-async function sendCodeBlock(url: string): Promise<string> {
-    const { name, ext, lineStart, lineEnd } = getFileInfo(url);
-    const response = await fetch("https://cors.proxy.consumet.org/" + url);
-    const text = await response.text();
-    const lines = text.split("\n");
-    const code = lines.slice(lineStart ?? 0, lineEnd ?? 26).join("\n");
-    const title = `**${name}**` + (lineStart ? `:${lineStart}` : "") + (lineEnd ? `-${lineEnd}` : "");
-    return `${title}\n\`\`\`${ext}\n${unindent(code)}\n\`\`\``;
+async function fetchLines(url: string, start: number, end: number) {
+    const res = await fetch("https://cors.proxy.consumet.org/" + url);
+    const lines = (await res.text())?.split("\n");
+    return {
+        code: lines.slice(start, end).join("\n"),
+        count: lines.length
+    };
+}
+
+async function gitPreview(url: string): Promise<string> {
+    const rawUrl = getRawUrl(url);
+    var { name, ext, lineStart, lineEnd } = getFileInfo(rawUrl);
+    const { code, count } = await fetchLines(rawUrl, lineStart ?? 1, lineEnd ?? 1);
+    return [
+        `**${name}** ${count > 1 ? "Lines" : "Line"}:`,
+        (lineStart ? `${lineStart + 1}` : ""),
+        (lineEnd ? `-${lineEnd}` : ""),
+        `\n\`\`\`${ext}\n${unindent(code)}\`\`\``
+    ].join(" ");
 }
 
 export default definePlugin({
     name: "GitCodePreview",
     description: "Send code block previews for git links with line ranges",
+    inputType: ApplicationCommandInputType.BUILT_IN_TEXT,
     authors: [{ name: "hunter", id: 222800179697287168n }],
     dependencies: ["CommandsAPI"],
     commands: [
         {
             name: "gitcurl",
-            description: "Git file url with line range",
+            description: "Send code from a git link as a code block.",
             options: [RequiredMessageOption],
             execute: async opts => ({
-                content: await sendCodeBlock(getRawUrl(findOption(opts, "message", ""))),
+                content: await gitPreview(findOption(opts, "message", "")),
             }),
         },
     ],
 });
-
-console.log("GitCodePreview loaded");
