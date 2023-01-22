@@ -19,25 +19,27 @@
 import { ApplicationCommandInputType, findOption, RequiredMessageOption } from "@api/Commands";
 import definePlugin from "@utils/types";
 
+const PROXY = "https://cors.proxy.consumet.org/";
+
 const HTTPS_REGEX = /(?:\s|^)https?:\/\//;
-const LINES_REGEX = /([a-zA-Z0-9-_.#/]*)/g;
+const LRANGE_REGEX = /([a-zA-Z0-9-_.#/]*)/g;
 
 const GITHOSTS: Array<{ regex: RegExp, replacements: [string, string][]; }> = [
     {
-        regex: mergeRegexes([HTTPS_REGEX, /(www\.)?github\.com\/.+?\/.+?\/blob\//, LINES_REGEX]),
+        regex: mergeRegexes([HTTPS_REGEX, /(www\.)?github\.com\/.+?\/.+?\/blob\//, LRANGE_REGEX]),
         replacements: [["/blob/", "/raw/"]],
     },
     {
-        regex: mergeRegexes([HTTPS_REGEX, /.+?\/.+?\/-\/blob\//, LINES_REGEX]),
+        regex: mergeRegexes([HTTPS_REGEX, /.+?\/.+?\/-\/blob\//, LRANGE_REGEX]),
         replacements: [["/blob/", "/raw/"]],
     },
     {
-        regex: mergeRegexes([HTTPS_REGEX, /.+?\/.+?\/.+?\/src\/branch\//, LINES_REGEX]),
+        regex: mergeRegexes([HTTPS_REGEX, /.+?\/.+?\/.+?\/src\/branch\//, LRANGE_REGEX]),
         replacements: [["/src/", "/raw/"]],
     },
 ];
 
-function mergeRegexes(regexes) {
+function mergeRegexes(regexes: RegExp[]): RegExp {
     return new RegExp(regexes.map(r => r.source).join(""), "g");
 }
 
@@ -57,7 +59,7 @@ function getRawUrl(url: string): string {
 }
 
 function getFileInfo(url: string): { name: string; ext: string; lineStart?: number; lineEnd?: number; } {
-    const matches = url.match(/([a-zA-Z0-9-_.]+)(?:#L(\d+)(?:-L(\d+))?)?$/);
+    const matches = url.match(/([a-zA-Z0-9-_.]+)(?:#L(\d+)(?:-[L]?(\d+))?)?$/);
     if (!matches) return { name: "", ext: "" };
     var [filename, ext] = matches[1].split(".");
     return {
@@ -76,10 +78,10 @@ function unindent(block: string): string {
 }
 
 async function fetchLines(url: string, start: number, end: number) {
-    const res = await fetch("https://cors.proxy.consumet.org/" + url);
+    const res = await fetch(PROXY + url);
     const lines = (await res.text())?.split("\n");
     return {
-        code: lines.slice(start, end).join("\n"),
+        code: lines.slice(start, end).join("\n").replace("```", "~~~"), // prevent code block escape in discord
         count: lines.length
     };
 }
@@ -89,10 +91,12 @@ async function gitPreview(url: string): Promise<string> {
     var { name, ext, lineStart, lineEnd } = getFileInfo(rawUrl);
     const { code, count } = await fetchLines(rawUrl, lineStart ?? 1, lineEnd ?? 1);
     return [
-        `**${name}** ${count > 1 ? "Lines" : "Line"}:`,
+        `**${name}` + (ext ? `.${ext}` : "") + "**",
+        `${count > 1 ? "Lines" : "Line"}:`,
         (lineStart ? `${lineStart + 1}` : ""),
         (lineEnd ? `-${lineEnd}` : ""),
-        `\n\`\`\`${ext}\n${unindent(code)}\`\`\``
+        `\n\`\`\`${ext}\n${unindent(code)}\n\`\`\``,
+        url
     ].join(" ");
 }
 
@@ -104,8 +108,8 @@ export default definePlugin({
     dependencies: ["CommandsAPI"],
     commands: [
         {
-            name: "gitcurl",
-            description: "Send code from a git link as a code block.",
+            name: "gitcat",
+            description: "Send lines of code from a git link as a code block.",
             options: [RequiredMessageOption],
             execute: async opts => ({
                 content: await gitPreview(findOption(opts, "message", "")),
