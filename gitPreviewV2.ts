@@ -63,7 +63,7 @@ export default definePlugin({
             help: "Available variables: ${url}, ${host}, ${user}, ${repo}, ${file}, ${raw}, ${ext}, ${preview}, ${linesLabel}, ${lineStart}, ${lineEnd}",
             type: OptionType.STRING,
             default:
-                "**${file}** ${linesLabel}: ${lineStart}-${lineEnd}${code}${url}\n",
+                "**${file}** ${linesLabel}: ${lineStart}-${lineEnd}${preview}${url}\n",
             restartNeeded: false,
         },
         replaceTripleBackticks: {
