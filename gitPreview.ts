@@ -1,4 +1,4 @@
-/*
+/**
  * Vencord, a modification for Discord's desktop app
  * Copyright (c) 2023 Vendicated and contributors
  *
@@ -17,6 +17,7 @@
 */
 
 import { ApplicationCommandInputType, findOption, RequiredMessageOption } from "@api/Commands";
+import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
 
 const PROXY = "https://cors.proxy.consumet.org/";
@@ -104,7 +105,7 @@ export default definePlugin({
     name: "GitCodePreview",
     description: "Send code block previews for git links with line ranges",
     inputType: ApplicationCommandInputType.BUILT_IN_TEXT,
-    authors: [{ name: "hunter", id: 222800179697287168n }],
+    authors: [Devs.hunt],
     dependencies: ["CommandsAPI"],
     commands: [
         {
