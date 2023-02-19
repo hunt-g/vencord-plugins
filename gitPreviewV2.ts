@@ -172,11 +172,16 @@ export default definePlugin({
 
     makeCode(text: string, lineStart: number, lineEnd: number | undefined): string {
         const { defaultLines, maxLines } = Settings.plugins.GitPreview;
-        lineEnd = Math.min(lineEnd ?? lineStart + defaultLines, lineStart + maxLines);
+        lineEnd = Math.max(lineEnd ?? lineStart + defaultLines, lineStart + maxLines);
 
         let lines = text.split("\n");
         lines = lines.slice(lineStart - 1, lineEnd);
         text = lines.join("\n").trim();
+
+        if (text.length > 2000) {
+            text = text.slice(0, 2000);
+            text = text.slice(0, text.lastIndexOf("\n"));
+        }
 
         return text;
     },
