@@ -1,4 +1,4 @@
-/*
+/**
  * Vencord, a modification for Discord's desktop app
  * Copyright (c) 2023 Vendicated and contributors
  *
@@ -16,133 +16,182 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-
-import { addPreEditListener, addPreSendListener, removePreEditListener, removePreSendListener } from "@api/MessageEvents";
+import { addPreSendListener, MessageObject, removePreSendListener } from "@api/MessageEvents";
 import { Settings } from "@api/settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 
-const PROXY = "https://cors.proxy.consumet.org/";
-const GIT_PARSE_REGEX = /^(?:https?:\/\/)?(?:www\.)?([^/]+).([^/]+).([^/]+)(.+(?=.*\/).)+([^#]+?(?:\.([^#]{1,4})?)?)(?:#L(?:ines-)?(\d+)(?:-L?(\d+))?)?$/gim;
 
-const SETTINGS = Settings.plugins.GithubPreview;
+const PROXY = "https://cors.consumet.stream/";
+const GIT_REGEX = /^(?:https?:\/\/)(?:www\.)?([^/]+).([^/]+).([^/]+)(.+(?=.*\/).)+([^#]+?(?:\.([^#]{1,4})?)?)(?:#L(?:ines-)?(\d+)(?:-L?(\d+))?)?$/gim;
 
-const messageFormat = SETTINGS.messageFormat.length
-    ? SETTINGS.messageFormat
-    : SETTINGS.messageFormat.default;
+
+interface Keys {
+    url: string;
+    host: string;
+    user: string;
+    repo: string;
+    path: string;
+    file: string;
+
+    // Optional
+    ext?: string;
+    lineStart?: number;
+    lineEnd?: number;
+
+    // Post-processed
+    rawUrl?: string;
+    code?: string;
+    codeLang?: string; // Highlight language for code block
+    codeBlock?: string;
+    linesLabel?: string;
+}
+
+const FormatKeys = ["url", "host", "user", "repo", "path", "file", "ext", "lineStart", "lineEnd", "rawUrl", "code", "codeLang", "codeBlock", "linesLabel"];
+
+
+// Not sure of the lifetime of these lol
+const matchStore: Record<string, Keys> = {}; // For duplicate matches
+const rawStore: Record<string, string> = {}; // For matches that have already been fetched
+
 
 export default definePlugin({
     name: "GitPreview",
     authors: [Devs.hunt],
     description: "Sends a preview of a Git file when you send a link to it",
     dependencies: ["MessageEventsAPI"],
-
     options: {
         defaultHighlight: {
-            description:
-                "Fallback highlight language to use when no language is specified",
+            description: "Fallback highlight language to use when no language is specified",
             type: OptionType.STRING,
             default: "sh",
             restartNeeded: false,
         },
-        defaultLines: {
+        defaultLength: {
             description: "Amount of lines to show when no line range is specified",
             type: OptionType.NUMBER,
             default: 1,
             restartNeeded: false,
         },
-        maxLines: {
+        maximumLength: {
             description: "Maximum amount of lines to show in a preview",
             type: OptionType.NUMBER,
             default: 25,
             restartNeeded: false,
         },
         messageFormat: {
-            description:
-                "Format of the message to send. Preview already includes newlines before and after.",
-            help: "Available variables: ${url}, ${host}, ${user}, ${repo}, ${file}, ${raw}, ${ext}, ${preview}, ${linesLabel}, ${lineStart}, ${lineEnd}",
+            description: "Format of the message to send. Preview already includes newlines before and after.",
+            help: "Keys: " + FormatKeys.join(", "),
             type: OptionType.STRING,
-            default:
-                "**${file}** ${linesLabel}: ${lineStart}-${lineEnd}${preview}${url}\n",
+            default: "**${file}** ${linesLabel}: ${lineStart}-${lineEnd}${codeBlock}<${url}>",
             restartNeeded: false,
         },
         replaceTripleBackticks: {
-            description:
-                "Replace all triple backticks within snippets with this string. Set to empty string to disable.",
+            description: "Replace all triple backticks within snippets with this string. Set to empty string to disable.",
             type: OptionType.STRING,
             default: "~~~",
             restartNeeded: false,
         },
-        sendFile: {
-            description:
-                "Send the preview as a file instead of a code block (Not Implemented)",
+        sendAsFile: {
+            description: "Send the preview as a file instead of a code block (Not Implemented)",
             type: OptionType.BOOLEAN,
             default: false,
             restartNeeded: false,
         },
     },
 
-    async githubPreview(m: RegExpMatchArray): Promise<string> {
-        const keys = {
-            url: m[0],
-            raw: m[0],
-            host: m[1],
-            user: m[2],
-            repo: m[3],
-            path: m[4],
-            file: m[5],
-            ext: m[6] ?? SETTINGS.defaultHighlight,
-            lineStart: m[7] ? parseInt(m[7]) : 1,
-            lineEnd: m[8] ? parseInt(m[8]) : SETTINGS.defaultLines,
-            preview: "",
-            linesLabel: "",
-        };
-        switch (keys.host) {
-            default: keys.raw = keys.raw.replace("/blob/", "/raw/");
+    async codePreview(msg: MessageObject): Promise<void> {
+        const { messageFormat } = Settings.plugins.GitPreview;
+        const { content } = msg;
+
+        if (!content.includes("https://")) return;
+
+        let pre: string, post: string | string[] = content;
+        let new_content = "";
+
+        for (const match of content.matchAll(GIT_REGEX)) {
+            [pre, ...post] = post.split(match[0]);
+            post = post.join(match[0]);
+
+            const keys = matchStore[match[0]] ?? await this.makeKeys(match); // Use cached keys if possible
+            const formatted = messageFormat.replace(/\$\{([^}]+)\}/g, (m, k) => keys[k] ?? m);
+            new_content = new_content.concat(pre, formatted);
         }
-
-        keys.lineEnd = Math.min(keys.lineEnd, keys.lineStart + SETTINGS.maxLines);
-        const _rawCode: string = await fetch(PROXY + keys.raw)
-            .then(res => res.text())
-            .then(text => text.split("\n"))
-            .then(lines => lines.slice(keys.lineStart - 1, keys.lineEnd))
-            .then(lines => lines.join("\n"));
-
-        keys.linesLabel = "Line" + (keys.lineEnd - keys.lineStart > 1 ? "s" : "");
-        keys.preview = `\n\`\`\`${keys.ext}\n${_rawCode}\n\`\`\`\n`;
-        return messageFormat.replace(/\$\{([^}]+)\}/g, (m, k) => keys[k] ?? m);
+        msg.content = new_content.concat(post, "\n");
     },
 
-    // Below this line no worky
+    async makeKeys(arr: Array<string> | RegExpMatchArray): Promise<Keys> {
+        const { defaultHighlight } = Settings.plugins.GitPreview;
+
+        const keys: Keys = {
+            url: arr[0],
+            host: arr[1],
+            user: arr[2],
+            repo: arr[3],
+            path: arr[4],
+            file: arr[5],
+            ext: arr[6],
+            lineStart: arr[7] ? parseInt(arr[7]) : undefined,
+            lineEnd: arr[8] ? parseInt(arr[8]) : undefined,
+        };
+
+        keys.rawUrl = this.makeRawUrl(keys.host, keys.url);
+        const rawCode = rawStore[keys.rawUrl] ?? await this.fetchRaw(keys.rawUrl); // Use cached code if possible
+        keys.code = this.makeCode(rawCode, keys.lineStart ?? 1, keys.lineEnd ?? undefined);
+        keys.codeLang = keys.ext ?? defaultHighlight;
+        keys.codeBlock = `\n\`\`\`${keys.ext}\n${keys.code}\n\`\`\`\n`;
+        keys.linesLabel = keys.lineStart && keys.lineEnd ? "Lines" : "Line";
+
+        matchStore[keys.url] = keys;
+        return keys;
+    },
+
+
+    makeRawUrl(host: string, url: string): string {
+        url = url.split("#")[0]; // Remove line numbers
+        switch (host) {
+            case "github":
+                return url.replace("/blob/", "/raw/");
+            case "pornhub":
+                return url.replace("/blob/", "/raw/");
+            default:
+                return url.replace("/blob/", "/raw/");
+        }
+    },
+
+    async fetchRaw(url: string): Promise<string> {
+        const res = await fetch(PROXY + url);
+        if (!res.ok) throw new Error("Failed to fetch raw file. Check your URL.");
+
+        const text = await res.text();
+
+        rawStore[url] = text;
+        return text;
+    },
+
+    makeCode(text: string, lineStart: number, lineEnd: number | undefined): string {
+        const { defaultLines, maxLines } = Settings.plugins.GitPreview;
+        lineEnd = Math.min(lineEnd ?? lineStart + defaultLines, lineStart + maxLines);
+
+        let lines = text.split("\n");
+        lines = lines.slice(lineStart - 1, lineEnd);
+        text = lines.join("\n").trim();
+
+        return text ?? "Where tf is the code??";
+    },
+
 
     start() {
-        this.preSend = addPreSendListener((_, msg) => {
-            if (!msg.content.includes("https://")) return;
-            for (const match of msg.content.matchAll(GIT_PARSE_REGEX)) {
-                console.log("MATCH: ", match); // ! DEBUG
+        this.preSend = addPreSendListener(async (_, msg) => { await this.codePreview(msg); });
 
-                this.githubPreview(match).then(formatted => {
-                    console.log("FORMATTED: ", formatted); // ! DEBUG
-                    msg.content = msg.content.replace(match[0], formatted);
-                });
-            }
-        });
-
-        this.preEdit = addPreEditListener((_, msg) => {
-            if (!msg.includes("https://")) return;
-            for (const match of msg.matchAll(GIT_PARSE_REGEX)) {
-                console.log("MATCH: ", match); // ! DEBUG
-
-                this.githubPreview(match).then(formatted => {
-                    console.log("FORMATTED: ", formatted); // ! DEBUG
-                    msg = msg.replace(match[0], formatted);
-                });
-            }
-        });
+        // TODO: Use messageFormat to edit instead of url once edited by preSend
+        // this.preEdit = addPreEditListener(async (_cid, _mid, msg) => { await this.codePreview(msg); });
     },
 
     stop() {
         removePreSendListener(this.preSend);
-        removePreEditListener(this.preEdit);
+
+        // TODO: As above
+        // removePreEditListener(this.preEdit);
     },
 });
