@@ -47,6 +47,7 @@ interface Keys {
     linesLabel?: string;
 }
 
+
 const FormatKeys = ["url", "host", "user", "repo", "path", "file", "ext", "lineStart", "lineEnd", "rawUrl", "code", "codeLang", "codeBlock", "linesLabel"];
 
 
@@ -177,7 +178,7 @@ export default definePlugin({
         lines = lines.slice(lineStart - 1, lineEnd);
         text = lines.join("\n").trim();
 
-        return text ?? "Where tf is the code??";
+        return text;
     },
 
 
