@@ -103,22 +103,23 @@ export default definePlugin({
 
     async codePreview(msg: MessageObject): Promise<void> {
         const { messageFormat } = Settings.plugins.GitPreview;
-        const { content } = msg;
 
-        if (!content.includes("https://")) return;
+        let keys: Keys;
+        const matched: string[] = [];
 
-        let pre: string, post: string | string[] = content;
-        let new_content = "";
+        for (const match of [...msg.content.matchAll(GIT_REGEX)]) {
+            if (matched.includes(match[0])) continue; // Skip duplicate matches
+            matched.push(match[0]);
 
-        for (const match of content.matchAll(GIT_REGEX)) {
-            [pre, ...post] = post.split(match[0]);
-            post = post.join(match[0]);
-
-            const keys = matchStore[match[0]] ?? await this.makeKeys(match); // Use cached keys if possible
-            const formatted = messageFormat.replace(/\$\{([^}]+)\}/g, (m, k) => keys[k] ?? m);
-            new_content = new_content.concat(pre, formatted);
+            if (!(keys = await this.makeKeys(match))) continue; // Invalid or unsupported URL
+            const preview = messageFormat.replace(/\$\{([^}]+)\}/g, (m: string, k: string) => keys[k] ?? "");
+            msg.content = msg.content.replaceAll(keys.url, preview);
         }
-        msg.content = new_content.concat(post, "\n");
+
+        if (msg.content.length > 1995) {
+            msg.content = msg.content.slice(0, 1995);
+            msg.content = msg.content.slice(0, msg.content.lastIndexOf("\n")) + "\n...";
+        }
     },
 
     async makeKeys(arr: Array<string> | RegExpMatchArray): Promise<Keys> {
@@ -136,7 +137,7 @@ export default definePlugin({
             lineEnd: arr[8] ? parseInt(arr[8]) : undefined,
         };
 
-        keys.rawUrl = this.makeRawUrl(keys.host, keys.url);
+        if (!(keys.rawUrl = this.makeRawUrl(keys))) return keys;
         const rawCode = rawStore[keys.rawUrl] ?? await this.fetchRaw(keys.rawUrl); // Use cached code if possible
         keys.code = this.makeCode(rawCode, keys.lineStart ?? 1, keys.lineEnd ?? undefined);
         keys.codeLang = keys.ext ?? defaultHighlight;
@@ -148,41 +149,35 @@ export default definePlugin({
     },
 
 
-    makeRawUrl(host: string, url: string): string {
-        url = url.split("#")[0]; // Remove line numbers
+    makeRawUrl(keys: Keys): string | undefined {
+        const { host, user, url, repo, path, file } = keys;
+        const deblobbed = path.replace("/blob/", "")
         switch (host) {
-            case "github":
-                return url.replace("/blob/", "/raw/");
-            case "pornhub":
-                return url.replace("/blob/", "/raw/");
-            default:
+            case "bitbucket.org": // No.
+                return;
+            case "github.com":
+
+                return `https://raw.githubusercontent.com/${user}/${repo}/${deblobbed}${file}`;
+            default: // gitlab.com, etc.
                 return url.replace("/blob/", "/raw/");
         }
     },
 
     async fetchRaw(url: string): Promise<string> {
-        const res = await fetch(PROXY + url);
+        console.log(url)
+        const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch raw file. Check your URL.");
 
-        const text = await res.text();
-
-        rawStore[url] = text;
-        return text;
+        return rawStore[url] = await res.text();
     },
 
     makeCode(text: string, lineStart: number, lineEnd: number | undefined): string {
         const { defaultLines, maxLines } = Settings.plugins.GitPreview;
-        lineEnd = Math.max(lineEnd ?? lineStart + defaultLines, lineStart + maxLines);
+        lineEnd = Math.min(lineEnd ?? lineStart + defaultLines, lineStart + maxLines);
 
         let lines = text.split("\n");
         lines = lines.slice(lineStart - 1, lineEnd);
         text = lines.join("\n").trim();
-
-        if (text.length > 2000) {
-            text = text.slice(0, 2000);
-            text = text.slice(0, text.lastIndexOf("\n"));
-        }
-
         return text;
     },
 
